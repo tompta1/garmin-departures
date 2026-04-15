@@ -107,13 +107,22 @@ async function discoverStationIds(): Promise<Map<string, RawStation>> {
     })
   }
 
-  // Recurse into capped 3-char prefixes → 4-char
+  // Recurse into capped 3-char prefixes → 4-char (and 5-char if still capped)
   if (cappedPrefixes3.length > 0) {
     const level4 = cappedPrefixes3.flatMap(p => CHARS.map(c => p + c))
+    const cappedPrefixes4: string[] = []
     await parallelMap(level4, FETCH_CONCURRENCY, async (prefix) => {
       const results = await fetchStations(prefix)
       for (const s of results) all.set(s.id, s)
+      if (results.length >= RESULT_LIMIT) cappedPrefixes4.push(prefix)
     })
+    if (cappedPrefixes4.length > 0) {
+      const level5 = cappedPrefixes4.flatMap(p => CHARS.map(c => p + c))
+      await parallelMap(level5, FETCH_CONCURRENCY, async (prefix) => {
+        const results = await fetchStations(prefix)
+        for (const s of results) all.set(s.id, s)
+      })
+    }
   }
 
   return all
@@ -127,7 +136,7 @@ async function fetchStations(mask: string): Promise<RawStation[]> {
       signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return []
-    return res.json() as Promise<RawStation[]>
+    return await res.json() as RawStation[]
   } catch {
     return []
   }
@@ -156,7 +165,7 @@ async function fetchStation(id: string): Promise<StationDetail | null> {
       signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return null
-    return res.json() as Promise<StationDetail>
+    return await res.json() as StationDetail
   } catch {
     return null
   }
