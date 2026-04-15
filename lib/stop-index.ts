@@ -1,3 +1,4 @@
+import { list } from '@vercel/blob'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { haversineMeters } from './geo.js'
@@ -5,24 +6,48 @@ import type { IndexedStop, StopsIndexFile, StopDirectionSummary } from './types.
 
 let cachedIndex: StopsIndexFile | null = null
 
-export function loadStopsIndex(): StopsIndexFile {
+export async function loadStopsIndex(): Promise<StopsIndexFile> {
   if (cachedIndex) return cachedIndex
 
+  // Always load the PID (Prague) index from the bundled file
   const pidPath = join(process.cwd(), 'data', 'stops-index.json')
-  const jmkPath = join(process.cwd(), 'data', 'stops-index-jmk.json')
-
   const pid = JSON.parse(readFileSync(pidPath, 'utf8')) as StopsIndexFile
 
-  // Merge JMK stops if the index has been built
-  if (existsSync(jmkPath)) {
-    const jmk = JSON.parse(readFileSync(jmkPath, 'utf8')) as StopsIndexFile
-    cachedIndex = {
-      generatedAt: pid.generatedAt,
-      sourceUrl: pid.sourceUrl,
-      stops: [...pid.stops, ...jmk.stops],
+  // Try to load the JMK index from Vercel Blob first (production path)
+  const blobToken = process.env['BLOB_READ_WRITE_TOKEN']
+  let jmkStops: IndexedStop[] = []
+
+  if (blobToken) {
+    try {
+      const { blobs } = await list({ prefix: 'jmk/stops-index.json', token: blobToken })
+      const blob = blobs[0]
+      if (blob) {
+        const res = await fetch(blob.url)
+        if (res.ok) {
+          const jmk = await res.json() as StopsIndexFile
+          jmkStops = jmk.stops
+          console.log(`JMK stops loaded from Blob: ${jmkStops.length} stops`)
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load JMK stops from Blob, trying local file:', err)
     }
-  } else {
-    cachedIndex = pid
+  }
+
+  // Fallback: bundled local file (local dev or first deploy before cron runs)
+  if (jmkStops.length === 0) {
+    const jmkPath = join(process.cwd(), 'data', 'stops-index-jmk.json')
+    if (existsSync(jmkPath)) {
+      const jmk = JSON.parse(readFileSync(jmkPath, 'utf8')) as StopsIndexFile
+      jmkStops = jmk.stops
+      console.log(`JMK stops loaded from local file: ${jmkStops.length} stops`)
+    }
+  }
+
+  cachedIndex = {
+    generatedAt: pid.generatedAt,
+    sourceUrl: pid.sourceUrl,
+    stops: [...pid.stops, ...jmkStops],
   }
 
   return cachedIndex
@@ -58,8 +83,6 @@ export function pickDirectionsForGroup(
   lat: number,
   lon: number,
 ): StopDirectionSummary[] {
-  // Each unique platform (A, B, C …) is its own tap-through direction.
-  // Stops without a platform code are each treated individually by stopId.
   const byPlatform = new Map<string, IndexedStop[]>()
   for (const stop of groupStops) {
     const key = stop.platformCode ?? `__stop__${stop.stopId}`
@@ -70,7 +93,6 @@ export function pickDirectionsForGroup(
 
   const summaries: StopDirectionSummary[] = []
   for (const platformStops of byPlatform.values()) {
-    // Pick the nearest physical stop within this platform bucket.
     const stop = [...platformStops].sort(
       (a, b) => haversineMeters(lat, lon, a.lat, a.lon) - haversineMeters(lat, lon, b.lat, b.lon),
     )[0]
@@ -85,7 +107,6 @@ export function pickDirectionsForGroup(
     })
   }
 
-  // Sort: nearest platform first, then alphabetically by platform code.
   summaries.sort((a, b) => {
     const stopA = groupStops.find(s => s.stopId === a.stopId)!
     const stopB = groupStops.find(s => s.stopId === b.stopId)!

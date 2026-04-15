@@ -2,7 +2,17 @@
   "regions": ["fra1"],
   "functions": {
     "api/nearby-departures.ts": {
-      "includeFiles": "data/stops-index.json|data/stops-index-jmk.json|data/jmk-schedule.json"
+      "includeFiles": "data/stops-index.json|data/stops-index-jmk.json",
+      "maxDuration": 30
+    },
+    "api/cron-refresh-jmk.ts": {
+      "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron-refresh-jmk",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

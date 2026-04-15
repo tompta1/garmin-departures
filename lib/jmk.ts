@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { head, list } from '@vercel/blob'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WatchDeparture } from './types.js'
 
@@ -12,13 +13,46 @@ interface JmkSchedule {
   stops: Record<string, ScheduleEntry[]>
 }
 
+// In-memory cache: holds the schedule for the lifetime of the function instance.
+// Vercel Blob is the source of truth; we re-fetch when the cache is empty (cold start).
 let _schedule: JmkSchedule | null = null
+let _scheduleGeneratedAt: string | null = null
 
-function loadSchedule(): JmkSchedule {
+async function loadSchedule(): Promise<JmkSchedule> {
   if (_schedule) return _schedule
+
+  // 1. Try Vercel Blob (production path)
+  const blobToken = process.env['BLOB_READ_WRITE_TOKEN']
+  if (blobToken) {
+    try {
+      const { blobs } = await list({ prefix: 'jmk/schedule.json', token: blobToken })
+      const blob = blobs[0]
+      if (blob) {
+        const res = await fetch(blob.url)
+        if (res.ok) {
+          _schedule = await res.json() as JmkSchedule
+          _scheduleGeneratedAt = _schedule.generatedAt
+          console.log(`JMK schedule loaded from Blob (generated ${_scheduleGeneratedAt})`)
+          return _schedule
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load JMK schedule from Blob, falling back to local file:', err)
+    }
+  }
+
+  // 2. Fallback: bundled local file (local dev or first deploy before cron runs)
   const filePath = join(process.cwd(), 'data', 'jmk-schedule.json')
-  _schedule = JSON.parse(readFileSync(filePath, 'utf8')) as JmkSchedule
-  return _schedule
+  if (existsSync(filePath)) {
+    _schedule = JSON.parse(readFileSync(filePath, 'utf8')) as JmkSchedule
+    _scheduleGeneratedAt = _schedule.generatedAt
+    console.log(`JMK schedule loaded from local file (generated ${_scheduleGeneratedAt})`)
+    return _schedule
+  }
+
+  throw new Error(
+    'JMK schedule not available. Run `npm run build:stops:jmk` locally or trigger the /api/cron-refresh-jmk endpoint.',
+  )
 }
 
 /**
@@ -26,12 +60,11 @@ function loadSchedule(): JmkSchedule {
  * Date string format: YYYYMMDD
  */
 function getActiveServiceIds(schedule: JmkSchedule, dateStr: string): Set<number> {
-  // Weekday index 0=Monday … 6=Sunday
   const year = Number(dateStr.slice(0, 4))
   const month = Number(dateStr.slice(4, 6)) - 1
   const day = Number(dateStr.slice(6, 8))
   const jsWeekday = new Date(year, month, day).getDay() // 0=Sun, 1=Mon…
-  const weekdayIndex = jsWeekday === 0 ? 6 : jsWeekday - 1 // convert to Mon=0
+  const weekdayIndex = jsWeekday === 0 ? 6 : jsWeekday - 1 // Mon=0
 
   const active = new Set<number>()
 
@@ -43,14 +76,13 @@ function getActiveServiceIds(schedule: JmkSchedule, dateStr: string): Set<number
     if (dateStr < startDate || dateStr > endDate) continue
     if (!days[weekdayIndex]) continue
 
-    // Check for removal exception on this date
     const exceptions = schedule.calendarDates[sidStr]
-    if (exceptions?.[dateStr] === 2) continue // removed
+    if (exceptions?.[dateStr] === 2) continue // removal exception
 
     active.add(sid)
   }
 
-  // Apply addition exceptions (exception_type=1)
+  // Addition exceptions
   for (const [sidStr, exceptions] of Object.entries(schedule.calendarDates)) {
     if (exceptions[dateStr] === 1) active.add(Number(sidStr))
   }
@@ -60,27 +92,23 @@ function getActiveServiceIds(schedule: JmkSchedule, dateStr: string): Set<number
 
 /**
  * Returns scheduled departures from a JMK stop within the next 60 minutes.
- * No real-time delay data is available (GTFS-RT has no trip updates).
  */
-export function fetchJmkDepartures(stopId: string, limit: number): WatchDeparture[] {
-  const schedule = loadSchedule()
+export async function fetchJmkDepartures(stopId: string, limit: number): Promise<WatchDeparture[]> {
+  const schedule = await loadSchedule()
 
-  // Current Prague time
   const now = new Date()
   const pragueStr = now.toLocaleString('sv-SE', { timeZone: 'Europe/Prague' })
-  // sv-SE locale gives ISO-like "YYYY-MM-DD HH:MM:SS"
   const dateStr = pragueStr.slice(0, 10).replace(/-/g, '')
   const [hStr, mStr, sStr] = pragueStr.slice(11).split(':')
   const nowSecs = Number(hStr) * 3600 + Number(mStr) * 60 + Number(sStr)
-  const windowEnd = nowSecs + 3600 // 60 minutes ahead
+  const windowEnd = nowSecs + 3600
 
   const activeServices = getActiveServiceIds(schedule, dateStr)
 
   const entries = schedule.stops[stopId]
   if (!entries) return []
 
-  // GTFS allows times > 86400 for after-midnight trips on the previous service day.
-  // We also check the previous day's services for those cases.
+  // Previous service day for after-midnight trips (GTFS times > 86400)
   const prevDate = new Date(Number(dateStr.slice(0, 4)), Number(dateStr.slice(4, 6)) - 1, Number(dateStr.slice(6, 8)) - 1)
   const prevDateStr = prevDate.toLocaleDateString('sv-SE').replace(/-/g, '')
   const prevActiveServices = getActiveServiceIds(schedule, prevDateStr)
@@ -88,13 +116,11 @@ export function fetchJmkDepartures(stopId: string, limit: number): WatchDepartur
   const results: WatchDeparture[] = []
 
   for (const [serviceId, depSecs, line, headsign, routeType] of entries) {
-    // Normal case: departure is today's service
     let minutes: number | null = null
+
     if (activeServices.has(serviceId) && depSecs >= nowSecs && depSecs <= windowEnd) {
       minutes = Math.round((depSecs - nowSecs) / 60)
-    }
-    // After-midnight case: departure time > 24h on yesterday's service
-    else if (prevActiveServices.has(serviceId) && depSecs >= 86400) {
+    } else if (prevActiveServices.has(serviceId) && depSecs >= 86400) {
       const adjustedSecs = depSecs - 86400
       if (adjustedSecs >= nowSecs && adjustedSecs <= windowEnd) {
         minutes = Math.round((adjustedSecs - nowSecs) / 60)
@@ -103,10 +129,6 @@ export function fetchJmkDepartures(stopId: string, limit: number): WatchDepartur
 
     if (minutes === null) continue
 
-    // Compute ISO timestamps from the scheduled departure time
-    const depDate = new Date(now)
-    depDate.setSeconds(depDate.getSeconds() + minutes * 60 - (depSecs - nowSecs - minutes * 60 * 1))
-    // Simpler: build the departure ISO string directly from schedule
     const depMs = now.getTime() + minutes * 60_000
     const depISO = new Date(depMs).toISOString()
 

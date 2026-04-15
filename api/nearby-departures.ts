@@ -45,7 +45,7 @@ export default async function handler(
   const groupLimit = clamp(parseNumber(req.query['groups']) ?? 5, 1, 10)
 
   try {
-    const index = loadStopsIndex()
+    const index = await loadStopsIndex()
     const eligibleStops = index.stops.filter(stop => stopMatchesModes(stop, requestedModes))
     const groups = findNearestGroups(eligibleStops, lat, lon, groupLimit)
 
@@ -107,7 +107,7 @@ async function buildDirectionResults(
 
       let departures
       if (stop.region === 'jmk') {
-        departures = fetchJmkDepartures(summary.stopId, departuresPerDirection)
+        departures = await fetchJmkDepartures(summary.stopId, departuresPerDirection)
       } else if (apiKey) {
         departures = await fetchDeparturesForStop(summary.stopId, apiKey, departuresPerDirection)
       } else {
