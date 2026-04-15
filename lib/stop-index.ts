@@ -13,10 +13,10 @@ export async function loadStopsIndex(): Promise<StopsIndexFile> {
   const pidPath = join(process.cwd(), 'data', 'stops-index.json')
   const pid = JSON.parse(readFileSync(pidPath, 'utf8')) as StopsIndexFile
 
-  // Try to load the JMK index from Vercel Blob first (production path)
   const blobToken = process.env['BLOB_READ_WRITE_TOKEN']
-  let jmkStops: IndexedStop[] = []
 
+  // Load JMK stops (Blob first, then bundled fallback)
+  let jmkStops: IndexedStop[] = []
   if (blobToken) {
     try {
       const { blobs } = await list({ prefix: 'jmk/stops-index.json', token: blobToken })
@@ -24,30 +24,44 @@ export async function loadStopsIndex(): Promise<StopsIndexFile> {
       if (blob) {
         const res = await fetch(blob.url)
         if (res.ok) {
-          const jmk = await res.json() as StopsIndexFile
-          jmkStops = jmk.stops
-          console.log(`JMK stops loaded from Blob: ${jmkStops.length} stops`)
+          jmkStops = ((await res.json() as StopsIndexFile).stops)
+          console.log(`JMK stops loaded from Blob: ${jmkStops.length}`)
         }
       }
     } catch (err) {
-      console.warn('Failed to load JMK stops from Blob, trying local file:', err)
+      console.warn('JMK Blob load failed, falling back to local file:', err)
     }
   }
-
-  // Fallback: bundled local file (local dev or first deploy before cron runs)
   if (jmkStops.length === 0) {
     const jmkPath = join(process.cwd(), 'data', 'stops-index-jmk.json')
     if (existsSync(jmkPath)) {
-      const jmk = JSON.parse(readFileSync(jmkPath, 'utf8')) as StopsIndexFile
-      jmkStops = jmk.stops
-      console.log(`JMK stops loaded from local file: ${jmkStops.length} stops`)
+      jmkStops = (JSON.parse(readFileSync(jmkPath, 'utf8')) as StopsIndexFile).stops
+      console.log(`JMK stops loaded from local file: ${jmkStops.length}`)
+    }
+  }
+
+  // Load IREDO stops (Blob only — no bundled fallback, cron populates it)
+  let iredoStops: IndexedStop[] = []
+  if (blobToken) {
+    try {
+      const { blobs } = await list({ prefix: 'iredo/stops-index.json', token: blobToken })
+      const blob = blobs[0]
+      if (blob) {
+        const res = await fetch(blob.url)
+        if (res.ok) {
+          iredoStops = ((await res.json() as StopsIndexFile).stops)
+          console.log(`IREDO stops loaded from Blob: ${iredoStops.length}`)
+        }
+      }
+    } catch (err) {
+      console.warn('IREDO Blob load failed:', err)
     }
   }
 
   cachedIndex = {
     generatedAt: pid.generatedAt,
     sourceUrl: pid.sourceUrl,
-    stops: [...pid.stops, ...jmkStops],
+    stops: [...pid.stops, ...jmkStops, ...iredoStops],
   }
 
   return cachedIndex

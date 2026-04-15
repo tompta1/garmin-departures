@@ -7,12 +7,19 @@
     },
     "api/cron-refresh-jmk.ts": {
       "maxDuration": 300
+    },
+    "api/cron-refresh-iredo.ts": {
+      "maxDuration": 300
     }
   },
   "crons": [
     {
       "path": "/api/cron-refresh-jmk",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron-refresh-iredo",
+      "schedule": "30 3 * * *"
     }
   ]
 }

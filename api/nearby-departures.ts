@@ -3,6 +3,7 @@ import { handlePreflight, isAllowedOrigin, setCors } from './_cors.js'
 import { haversineMeters } from '../lib/geo.js'
 import { fetchDeparturesForStop } from '../lib/golemio.js'
 import { fetchJmkDepartures } from '../lib/jmk.js'
+import { fetchIredoDepartures } from '../lib/iredo.js'
 import { findNearestGroups, loadStopsIndex, pickDirectionsForGroup } from '../lib/stop-index.js'
 import type { IndexedStop, SupportedMode, WatchDirectionResult } from '../lib/types.js'
 
@@ -102,6 +103,8 @@ async function buildDirectionResults(
       let departures
       if (stop.region === 'jmk') {
         departures = await fetchJmkDepartures(summary.stopId, departuresPerDirection)
+      } else if (stop.region === 'iredo') {
+        departures = await fetchIredoDepartures(summary.stopId, departuresPerDirection)
       } else if (apiKey) {
         departures = await fetchDeparturesForStop(summary.stopId, apiKey, departuresPerDirection)
       } else {
