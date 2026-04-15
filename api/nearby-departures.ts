@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { handlePreflight, isAllowedOrigin, setCors } from './_cors.js'
-import { haversineMeters, roundCoord } from '../lib/geo.js'
+import { haversineMeters } from '../lib/geo.js'
 import { fetchDeparturesForStop } from '../lib/golemio.js'
 import { fetchJmkDepartures } from '../lib/jmk.js'
 import { findNearestGroups, loadStopsIndex, pickDirectionsForGroup } from '../lib/stop-index.js'
@@ -61,7 +61,6 @@ export default async function handler(
         )
 
         return {
-          groupId: group.groupId,
           name: group.groupName,
           distanceMeters: Math.round(group.distanceMeters),
           directions,
@@ -70,12 +69,7 @@ export default async function handler(
     )
 
     res.setHeader('Cache-Control', 'public, max-age=10')
-    res.status(200).json({
-      generatedAt: new Date().toISOString(),
-      location: { lat: roundCoord(lat), lon: roundCoord(lon) },
-      modes: requestedModes,
-      stops,
-    })
+    res.status(200).json({ stops })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     const missingIndex = message.includes('stops-index.json')
@@ -119,17 +113,20 @@ async function buildDirectionResults(
           ? `platform ${summary.platformCode}`
           : 'this direction'
 
+      // Only include fields the watch app actually reads — keep response small
+      // to avoid Garmin SDK NETWORK_RESPONSE_TOO_LARGE (-402).
+      const slimDepartures = departures.map(d => ({
+        line: d.line,
+        headsign: d.headsign,
+        minutes: d.minutes,
+        routeType: d.routeType,
+      }))
+
       return {
-        directionId: summary.directionId,
         label,
-        stopId: stop.stopId,
-        stopName: stop.name,
-        groupName,
         platformCode: stop.platformCode,
-        lat: stop.lat,
-        lon: stop.lon,
         distanceMeters: Math.round(haversineMeters(lat, lon, stop.lat, stop.lon)),
-        departures,
+        departures: slimDepartures,
       }
     }),
   )

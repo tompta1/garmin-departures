@@ -29,6 +29,7 @@ export interface StopsIndexFile {
   stops: IndexedStop[]
 }
 
+// Full departure record used internally (golemio / jmk fetchers)
 export interface WatchDeparture {
   line: string
   headsign: string
@@ -39,15 +40,18 @@ export interface WatchDeparture {
   routeType: number | null
 }
 
+// Slimmed departure sent in the API response (only fields the watch reads)
+export interface SlimDeparture {
+  line: string
+  headsign: string
+  minutes: number
+  routeType: number | null
+}
+
+// Slimmed direction result sent in the API response (only fields the watch reads)
 export interface WatchDirectionResult {
-  directionId: '0' | '1' | 'unknown'
   label: string
-  stopId: string
-  stopName: string
-  groupName: string
   platformCode: string | null
-  lat: number
-  lon: number
   distanceMeters: number
-  departures: WatchDeparture[]
+  departures: SlimDeparture[]
 }
