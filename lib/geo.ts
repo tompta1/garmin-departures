@@ -16,6 +16,3 @@ export function haversineMeters(
   return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-export function roundCoord(value: number): number {
-  return Math.round(value * 1e6) / 1e6
-}
