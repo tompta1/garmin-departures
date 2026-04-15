@@ -9,13 +9,14 @@ const IREDO_BASE = 'https://iredo.online'
 
 interface IredoDeparture {
   id: string
+  name: string | null          // train display name e.g. "Os 5358", "R14 (R 101069)"
   destStation: string
-  depTime: string          // Prague local time, no timezone: "2026-04-15T14:07:00"
-  vehicleType: string      // "A" = bus/coach, "V" = train, "S" = other
-  lineNumber: number
+  depTime: string              // Prague local time, no timezone: "2026-04-15T14:07:00"
+  vehicleType: string          // "A"|"S" = bus/coach, "V" = train
+  lineNumber: number | null    // null for trains
   extLineName: string | null
-  serviceNumber: number
-  delay: number            // minutes (positive = late, negative = early)
+  serviceNumber: number | null // null for trains
+  delay: number | null         // minutes (positive = late, negative = early); null = unknown
   platform: string | null
 }
 
@@ -80,8 +81,12 @@ function cleanDestination(raw: string): string {
 /** Best human-readable line number from a departure record */
 function lineName(dep: IredoDeparture): string {
   if (dep.extLineName) return dep.extLineName
-  if (dep.vehicleType === 'V') return dep.serviceNumber?.toString() ?? dep.lineNumber.toString()
-  return dep.lineNumber.toString()
+  // Trains: use the display name ("Os 5358" → "Os"), or fall through
+  if (dep.vehicleType === 'V' && dep.name) {
+    // Strip the parenthesised internal ID if present: "R14 (R 101069 )" → "R14"
+    return dep.name.replace(/\s*\(.*\)\s*$/, '').trim()
+  }
+  return dep.serviceNumber?.toString() ?? dep.lineNumber?.toString() ?? '?'
 }
 
 function vehicleToRouteType(vehicleType: string): number {
