@@ -27,8 +27,7 @@
             <!-- Forerunner 265 -->
             <iq:product id="fr265"/>
             <iq:product id="fr265s"/>
-            <!-- Forerunner 4xx/4xxS -->
-            <iq:product id="fr45"/>
+            <!-- Forerunner 55 -->
             <iq:product id="fr55"/>
             <!-- Forerunner 570 -->
             <iq:product id="fr57042mm"/>
