@@ -2,10 +2,10 @@
  * Vercel Cron endpoint — runs daily to discover all IREDO stops
  * (Pardubický + Královéhradecký kraj) and upload a stops index to Vercel Blob.
  *
- * Discovery strategy: recursive findStations prefix search across the Czech
- * alphabet. When a query returns the 50-result cap, subdivide into all
- * next-character combinations until the result count drops below the cap.
- * Then fetch getStation for each unique ID to get lat/lon.
+ * Discovery strategy: enumerate all 2-char prefixes across the Czech alphabet
+ * in parallel (concurrency-limited). Where results hit the 50-item cap, recurse
+ * with 3-char (and 4-char) prefixes. Then fetch getStation for each unique ID
+ * to get lat/lon, also in parallel batches.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { put } from '@vercel/blob'
@@ -13,12 +13,13 @@ import type { IndexedStop, StopsIndexFile } from '../lib/types.js'
 
 const IREDO_BASE = 'https://iredo.online'
 const RESULT_LIMIT = 50
-const MAX_DEPTH = 5
+const MAX_DEPTH = 4          // max prefix length before giving up
+const FETCH_CONCURRENCY = 20 // parallel requests at once
 
 // Bounding box for Pardubický + Královéhradecký kraj
 const BOUNDS = { latMin: 49.7, latMax: 50.95, lonMin: 14.8, lonMax: 17.2 }
 
-// Czech alphabet characters that appear as leading chars in stop names
+// Czech characters that appear at the start of stop/city names
 const CHARS = 'abcdefghijklmnopqrstuvwxyzáčďéěíňóřšťúůýž'.split('')
 
 interface RawStation {
@@ -44,10 +45,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   try {
     console.log('IREDO cron: discovering stations...')
-    const stationIds = await discoverStationIds()
-    console.log(`IREDO cron: discovered ${stationIds.size} unique station IDs`)
+    const stationMap = await discoverStationIds()
+    console.log(`IREDO cron: discovered ${stationMap.size} unique station IDs`)
 
-    const stops = await fetchStopCoordinates(stationIds)
+    const stops = await fetchStopCoordinates([...stationMap.keys()])
     console.log(`IREDO cron: ${stops.length} stops with valid coordinates in region`)
 
     const stopsIndex: StopsIndexFile = {
@@ -77,22 +78,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 async function discoverStationIds(): Promise<Map<string, RawStation>> {
   const all = new Map<string, RawStation>()
 
-  async function search(prefix: string, depth: number): Promise<void> {
-    await sleep(50) // be polite
-    const results = await fetchStations(prefix)
-    for (const s of results) all.set(s.id, s)
-
-    if (results.length >= RESULT_LIMIT && depth < MAX_DEPTH) {
-      // Sequential to avoid overwhelming the server
-      for (const c of CHARS) {
-        await search(prefix + c, depth + 1)
-      }
+  // Build all 2-char starting prefixes
+  const seedPrefixes: string[] = []
+  for (const a of CHARS) {
+    for (const b of CHARS) {
+      seedPrefixes.push(a + b)
     }
   }
 
-  // Top-level: run in small parallel batches
-  for (let i = 0; i < CHARS.length; i += 5) {
-    await Promise.all(CHARS.slice(i, i + 5).map(c => search(c, 1)))
+  // Fetch seeds in parallel, collect capped ones for recursion
+  const cappedPrefixes: string[] = []
+  await parallelMap(seedPrefixes, FETCH_CONCURRENCY, async (prefix) => {
+    const results = await fetchStations(prefix)
+    for (const s of results) all.set(s.id, s)
+    if (results.length >= RESULT_LIMIT) cappedPrefixes.push(prefix)
+  })
+
+  // Recurse into capped 2-char prefixes → 3-char
+  const cappedPrefixes3: string[] = []
+  if (cappedPrefixes.length > 0) {
+    const level3 = cappedPrefixes.flatMap(p => CHARS.map(c => p + c))
+    await parallelMap(level3, FETCH_CONCURRENCY, async (prefix) => {
+      const results = await fetchStations(prefix)
+      for (const s of results) all.set(s.id, s)
+      if (results.length >= RESULT_LIMIT && prefix.length < MAX_DEPTH) {
+        cappedPrefixes3.push(prefix)
+      }
+    })
+  }
+
+  // Recurse into capped 3-char prefixes → 4-char
+  if (cappedPrefixes3.length > 0) {
+    const level4 = cappedPrefixes3.flatMap(p => CHARS.map(c => p + c))
+    await parallelMap(level4, FETCH_CONCURRENCY, async (prefix) => {
+      const results = await fetchStations(prefix)
+      for (const s of results) all.set(s.id, s)
+    })
   }
 
   return all
@@ -100,33 +121,29 @@ async function discoverStationIds(): Promise<Map<string, RawStation>> {
 
 async function fetchStations(mask: string): Promise<RawStation[]> {
   const url = `${IREDO_BASE}/oredo/findStations?mask=${encodeURIComponent(mask)}`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'garmin-departures/cron-refresh-iredo' },
-    signal: AbortSignal.timeout(15_000),
-  })
-  if (!res.ok) return []
-  return res.json() as Promise<RawStation[]>
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'garmin-departures/cron-refresh-iredo' },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return []
+    return res.json() as Promise<RawStation[]>
+  } catch {
+    return []
+  }
 }
 
 // ── Coordinate fetching ───────────────────────────────────────────────────────
 
-async function fetchStopCoordinates(stationIds: Map<string, RawStation>): Promise<IndexedStop[]> {
-  const ids = [...stationIds.keys()]
+async function fetchStopCoordinates(ids: string[]): Promise<IndexedStop[]> {
   const stops: IndexedStop[] = []
 
-  // Fetch in batches of 10 to avoid hammering the server
-  for (let i = 0; i < ids.length; i += 10) {
-    const batch = ids.slice(i, i + 10)
-    const details = await Promise.all(batch.map(id => fetchStation(id)))
-
-    for (const detail of details) {
-      if (!detail) continue
-      const stop = toIndexedStop(detail)
-      if (stop) stops.push(stop)
-    }
-
-    if (i + 10 < ids.length) await sleep(100)
-  }
+  await parallelMap(ids, FETCH_CONCURRENCY, async (id) => {
+    const detail = await fetchStation(id)
+    if (!detail) return
+    const stop = toIndexedStop(detail)
+    if (stop) stops.push(stop)
+  })
 
   return stops
 }
@@ -146,9 +163,8 @@ async function fetchStation(id: string): Promise<StationDetail | null> {
 }
 
 function toIndexedStop(detail: StationDetail): IndexedStop | null {
-  // Filter to IREDO region bounding box; discard zero-coordinate placeholders
   if (
-    detail.lat === 0 && detail.lon === 0 ||
+    (detail.lat === 0 && detail.lon === 0) ||
     detail.lat < BOUNDS.latMin || detail.lat > BOUNDS.latMax ||
     detail.lon < BOUNDS.lonMin || detail.lon > BOUNDS.lonMax
   ) return null
@@ -164,7 +180,7 @@ function toIndexedStop(detail: StationDetail): IndexedStop | null {
     lat: detail.lat,
     lon: detail.lon,
     platformCode: null,
-    routeTypes: [3], // bus; trains are rare in this MHD context
+    routeTypes: [3],
     dominantDirectionId: 'unknown',
     headsignsByDirection: { unknown: [] },
     region: 'iredo',
@@ -176,6 +192,19 @@ function cleanName(raw: string): string {
   return raw.replace(/,,/g, ', ').replace(/,([^ ])/g, ', $1').trim()
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+// ── Utility ───────────────────────────────────────────────────────────────────
+
+async function parallelMap<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let i = 0
+  async function worker(): Promise<void> {
+    while (i < items.length) {
+      const item = items[i++]!
+      await fn(item)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
 }
