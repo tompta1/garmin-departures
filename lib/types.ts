@@ -20,6 +20,7 @@ export interface IndexedStop {
   routeTypes: number[]
   dominantDirectionId: '0' | '1' | 'unknown'
   headsignsByDirection: Partial<Record<'0' | '1' | 'unknown', string[]>>
+  region: 'pid' | 'jmk'
 }
 
 export interface StopsIndexFile {

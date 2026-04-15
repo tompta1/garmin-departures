@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { haversineMeters } from './geo.js'
 import type { IndexedStop, StopsIndexFile, StopDirectionSummary } from './types.js'
@@ -8,9 +8,23 @@ let cachedIndex: StopsIndexFile | null = null
 export function loadStopsIndex(): StopsIndexFile {
   if (cachedIndex) return cachedIndex
 
-  const filePath = join(process.cwd(), 'data', 'stops-index.json')
-  const raw = readFileSync(filePath, 'utf8')
-  cachedIndex = JSON.parse(raw) as StopsIndexFile
+  const pidPath = join(process.cwd(), 'data', 'stops-index.json')
+  const jmkPath = join(process.cwd(), 'data', 'stops-index-jmk.json')
+
+  const pid = JSON.parse(readFileSync(pidPath, 'utf8')) as StopsIndexFile
+
+  // Merge JMK stops if the index has been built
+  if (existsSync(jmkPath)) {
+    const jmk = JSON.parse(readFileSync(jmkPath, 'utf8')) as StopsIndexFile
+    cachedIndex = {
+      generatedAt: pid.generatedAt,
+      sourceUrl: pid.sourceUrl,
+      stops: [...pid.stops, ...jmk.stops],
+    }
+  } else {
+    cachedIndex = pid
+  }
+
   return cachedIndex
 }
 

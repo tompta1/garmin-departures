@@ -245,6 +245,7 @@ function toIndexedStop(stop: StopRecord, aggregate: StopAggregate | undefined): 
       '1': topHeadsigns(aggregate.headsigns.get('1')),
       unknown: topHeadsigns(aggregate.headsigns.get('unknown')),
     },
+    region: 'pid' as const,
   }
 }
 

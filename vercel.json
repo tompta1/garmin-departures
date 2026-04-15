@@ -2,7 +2,7 @@
   "regions": ["fra1"],
   "functions": {
     "api/nearby-departures.ts": {
-      "includeFiles": "data/stops-index.json"
+      "includeFiles": "data/stops-index.json|data/stops-index-jmk.json|data/jmk-schedule.json"
     }
   }
 }

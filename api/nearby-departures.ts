@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { handlePreflight, isAllowedOrigin, setCors } from './_cors.js'
 import { haversineMeters, roundCoord } from '../lib/geo.js'
 import { fetchDeparturesForStop } from '../lib/golemio.js'
+import { fetchJmkDepartures } from '../lib/jmk.js'
 import { findNearestGroups, loadStopsIndex, pickDirectionsForGroup } from '../lib/stop-index.js'
 import type { IndexedStop, SupportedMode, WatchDirectionResult } from '../lib/types.js'
 
@@ -35,11 +36,9 @@ export default async function handler(
     return
   }
 
-  const apiKey = process.env['GOLEMIO_API_KEY']
-  if (!apiKey) {
-    res.status(500).json({ error: 'GOLEMIO_API_KEY not configured' })
-    return
-  }
+  // GOLEMIO_API_KEY is only required when serving PID (Prague) stops.
+  // JMK stops use the local schedule index and do not call Golemio.
+  const apiKey = process.env['GOLEMIO_API_KEY'] ?? null
 
   const requestedModes = parseModes(req.query['modes'])
   const departuresPerDirection = clamp(parseNumber(req.query['limit']) ?? 10, 1, 10)
@@ -94,7 +93,7 @@ async function buildDirectionResults(
   groupName: string,
   lat: number,
   lon: number,
-  apiKey: string,
+  apiKey: string | null,
   departuresPerDirection: number,
 ): Promise<WatchDirectionResult[]> {
   const summaries = pickDirectionsForGroup(groupStops, lat, lon)
@@ -106,7 +105,14 @@ async function buildDirectionResults(
         throw new Error(`Indexed stop ${summary.stopId} missing from group ${groupName}`)
       }
 
-      const departures = await fetchDeparturesForStop(summary.stopId, apiKey, departuresPerDirection)
+      let departures
+      if (stop.region === 'jmk') {
+        departures = fetchJmkDepartures(summary.stopId, departuresPerDirection)
+      } else if (apiKey) {
+        departures = await fetchDeparturesForStop(summary.stopId, apiKey, departuresPerDirection)
+      } else {
+        throw new Error('GOLEMIO_API_KEY not configured')
+      }
       const label = summary.headsignSamples[0]
         ? `to ${summary.headsignSamples[0]}`
         : summary.platformCode

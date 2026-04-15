@@ -4,8 +4,10 @@ node_modules/
 connectiq-watch/build/
 .tools/
 
-# Generated build artifacts — run `npm run build:stops` to regenerate
+# Generated build artifacts — regenerate with npm run build:stops / build:stops:jmk
 data/stops-index.json
+data/stops-index-jmk.json
+data/jmk-schedule.json
 
 # Local environment overrides
 .env

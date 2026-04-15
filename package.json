@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:stops": "tsx scripts/build-stops.ts",
+    "build:stops:jmk": "tsx scripts/build-stops-jmk.ts",
     "check": "tsc --noEmit"
   },
   "devDependencies": {
