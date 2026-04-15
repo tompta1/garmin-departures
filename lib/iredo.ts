@@ -10,7 +10,7 @@ const IREDO_BASE = 'https://iredo.online'
 interface IredoDeparture {
   id: string
   destStation: string
-  depTime: string          // ISO 8601 e.g. "2026-04-15T14:07:00"
+  depTime: string          // Prague local time, no timezone: "2026-04-15T14:07:00"
   vehicleType: string      // "A" = bus/coach, "V" = train, "S" = other
   lineNumber: number
   extLineName: string | null
@@ -34,13 +34,24 @@ export async function fetchIredoDepartures(stopId: string, limit: number): Promi
     return []
   }
 
-  const now = Date.now()
+  const now = new Date()
+  const nowMs = now.getTime()
+
+  // depTime is Prague local time with no timezone indicator.
+  // On Vercel servers (UTC), new Date("2026-04-15T14:15:00") is parsed as UTC,
+  // but the value represents Prague local time (UTC+1 or UTC+2 depending on DST).
+  // Compute the offset by comparing UTC epoch to the Prague-local string of now.
+  const pragueOffsetMs = nowMs - new Date(
+    now.toLocaleString('sv-SE', { timeZone: 'Europe/Prague' }).replace(' ', 'T'),
+  ).getTime()
+
   const results: WatchDeparture[] = []
 
   for (const dep of raw) {
-    const scheduledMs = new Date(dep.depTime).getTime()
+    // Apply timezone correction: treat depTime as Prague local, convert to UTC ms
+    const scheduledMs = new Date(dep.depTime).getTime() + pragueOffsetMs
     const actualMs = scheduledMs + (dep.delay ?? 0) * 60_000
-    const minutes = Math.round((actualMs - now) / 60_000)
+    const minutes = Math.round((actualMs - nowMs) / 60_000)
 
     // Skip already-departed and beyond 60 min
     if (minutes < 0 || minutes > 60) continue
