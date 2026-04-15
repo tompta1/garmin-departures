@@ -1,0 +1,15 @@
+node_modules/
+.vercel/
+.vercel
+connectiq-watch/build/
+.tools/
+
+# Generated build artifacts — run `npm run build:stops` to regenerate
+data/stops-index.json
+
+# Local environment overrides
+.env
+.env.local
+
+# Tool/editor artifacts
+.codex

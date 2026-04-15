@@ -1,0 +1,17 @@
+{
+  "name": "garmin-departures",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:stops": "tsx scripts/build-stops.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@vercel/node": "^5.6.15",
+    "adm-zip": "^0.5.16",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
